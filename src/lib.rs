@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use serde_json::json;
 
 // TODO: Add the ability to hack into the code or add queuing
 
@@ -78,7 +79,8 @@ fn get_http_client(notion_api_key: &str) -> reqwest::Client {
 pub struct Client {
     http_client: Rc<reqwest::Client>,
     pub pages: Pages,
-    pub blocks: Blocks
+    pub blocks: Blocks,
+    pub databases: Databases
 }
 
 use std::rc::Rc;
@@ -89,12 +91,9 @@ impl<'a> Client {
         
         Client {
             http_client: http_client.clone(),
-            pages: Pages {
-                http_client: http_client.clone()
-            },
-            blocks: Blocks {
-                http_client: http_client.clone()
-            }
+            pages: Pages { http_client: http_client.clone() },
+            blocks: Blocks { http_client: http_client.clone() },
+            databases: Databases { http_client: http_client.clone() }
         }
     }
 }
@@ -178,8 +177,14 @@ impl Databases {
     pub async fn query(self, options: DatabaseQueryOptions) -> Result<QueryResponse<Page>> {
         let url = format!("https://api.notion.com/v1/databases/{database_id}/query", database_id = options.database_id);
 
-        let request = self.http_client
-            .post(url)
+        let mut request = self.http_client
+            .post(url);
+
+        if let Some(filter) = options.filter {
+            request = request.json(&json!({ "filter": filter }));
+        }
+
+        let request = request
             .send()
             .await?;
 
