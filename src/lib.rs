@@ -170,11 +170,10 @@ impl BlockChildren {
 
 pub struct Databases {
     http_client: Rc<reqwest::Client>,
-    // token: String
 }
 
 impl Databases {
-    pub async fn query(self, options: DatabaseQueryOptions) -> Result<QueryResponse<Page>> {
+    pub async fn query<'a>(self, options: DatabaseQueryOptions<'a>) -> Result<QueryResponse<Page>> {
         let url = format!("https://api.notion.com/v1/databases/{database_id}/query", database_id = options.database_id);
 
         let mut request = self.http_client
@@ -199,9 +198,10 @@ impl Databases {
     }
 }
 
-pub struct DatabaseQueryOptions {
-    pub database_id: String,
-    pub filter: Option<Value> // TODO: Implement spec for filter
+pub struct DatabaseQueryOptions<'a> {
+    pub database_id: &'a str,
+    // TODO: Implement spec for filter?
+    pub filter: Option<Value> 
 }
 
 
