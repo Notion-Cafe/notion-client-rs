@@ -77,8 +77,8 @@ fn get_http_client(notion_api_key: &str) -> reqwest::Client {
 #[allow(unused)]
 pub struct Client {
     http_client: Rc<reqwest::Client>,
-    pages: Pages,
-    blocks: Blocks
+    pub pages: Pages,
+    pub blocks: Blocks
 }
 
 use std::rc::Rc;
