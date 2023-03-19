@@ -75,37 +75,31 @@ fn get_http_client(notion_api_key: &str) -> Result<reqwest::Client> {
     )
 }
 
+#[allow(unused)]
 pub struct Client {
-    token: String,
+    http_client: Rc<reqwest::Client>,
+    pages: Pages,
+    blocks: Blocks
 }
 
-impl Client {
-    pub fn new(notion_api_key: &str) -> Result<Self> {
-        get_http_client(notion_api_key)?;
+use std::rc::Rc;
 
+impl<'a> Client {
+    pub fn new(notion_api_key: &'a str) -> Result<Self> {
+        let http_client = Rc::from(get_http_client(notion_api_key)?);
+
+        
         Ok(
             Client {
-                token: notion_api_key.to_owned(),
+                http_client: http_client.clone(),
+                pages: Pages {
+                    http_client: http_client.clone()
+                },
+                blocks: Blocks {
+                    http_client: http_client.clone()
+                }
             }
         )
-    }
-
-    pub fn pages(&self) -> Pages {
-        Pages {
-            token: self.token.to_owned()
-        }
-    }
-
-    pub fn blocks(&self) -> Blocks {
-        Blocks {
-            token: self.token.to_owned()
-        }
-    }
-
-    pub fn databases(&self) -> Databases {
-        Databases {
-            token: self.token.to_owned()
-        }
     }
 }
 
@@ -114,14 +108,14 @@ pub struct PageOptions<'a> {
 }
 
 pub struct Pages {
-    token: String
+    http_client: Rc<reqwest::Client>
 }
 
 impl Pages {
-    pub async fn retrieve(self, options: PageOptions<'_>) -> Result<Page> {
+    pub async fn retrieve<'a>(self, options: PageOptions<'a>) -> Result<Page> {
         let url = format!("https://api.notion.com/v1/pages/{page_id}", page_id = options.page_id);
 
-        let request = get_http_client(&self.token)?
+        let request = self.http_client
             .get(url)
             .send()
             .await?;
@@ -138,19 +132,19 @@ impl Pages {
 }
 
 pub struct Blocks {
-    token: String,
+    http_client: Rc<reqwest::Client>,
 }
 
 impl Blocks {
     pub fn children(&self) -> BlockChildren {
         BlockChildren {
-            token: self.token.to_owned()
+            http_client: self.http_client.clone()
         }
     }
 }
 
 pub struct BlockChildren {
-    token: String
+    http_client: Rc<reqwest::Client>,
 }
 
 pub struct BlockChildrenListOptions<'a> {
@@ -158,10 +152,10 @@ pub struct BlockChildrenListOptions<'a> {
 }
 
 impl BlockChildren {
-    pub async fn list(self, options: BlockChildrenListOptions<'_>) -> Result<QueryResponse<Block>> {
+    pub async fn list<'a>(self, options: BlockChildrenListOptions<'a>) -> Result<QueryResponse<Block>> {
         let url = format!("https://api.notion.com/v1/blocks/{block_id}/children", block_id = options.block_id);
 
-        let request = get_http_client(&self.token)?
+        let request = self.http_client
             .get(&url)
             .send()
             .await?;
@@ -180,14 +174,15 @@ impl BlockChildren {
 }
 
 pub struct Databases {
-    token: String
+    http_client: Rc<reqwest::Client>,
+    // token: String
 }
 
 impl Databases {
     pub async fn query(self, options: DatabaseQueryOptions) -> Result<QueryResponse<Page>> {
         let url = format!("https://api.notion.com/v1/databases/{database_id}/query", database_id = options.database_id);
 
-        let request = get_http_client(&self.token)?
+        let request = self.http_client
             .post(url)
             .send()
             .await?;
@@ -845,7 +840,7 @@ impl std::fmt::Display for Date {
 #[serde(try_from = "String", into = "String")]
 pub enum DateValue {
     DateTime(DateTime<Utc>),
-    Date(chrono::Date<Utc>)
+    Date(chrono::NaiveDate)
 }
 
 impl TryFrom<String> for DateValue {
@@ -856,8 +851,7 @@ impl TryFrom<String> for DateValue {
         let value = if ISO_8601_DATE.is_match(&string) {
             DateValue::Date(
                 DateTime::parse_from_rfc3339(&format!("{string}T00:00:00Z"))?
-                    .date()
-                    .with_timezone(&Utc)
+                    .date_naive()
             )
         } else {
             DateValue::DateTime(
@@ -879,7 +873,11 @@ impl From<DateValue> for String {
 impl std::fmt::Display for DateValue {
     fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         let value = match self {
-            DateValue::Date(date) => date.and_hms_opt(0, 0, 0).unwrap().to_rfc3339(),
+            DateValue::Date(date) => DateTime::<Utc>::from_utc(
+                date.and_hms_opt(0, 0, 0)
+                    .expect("to parse NaiveDate into DateTime "), 
+                Utc
+            ).to_rfc3339(),
             DateValue::DateTime(date_time) => date_time.to_rfc3339()
         };
         Ok(write!(formatter, "{}", value)?)
