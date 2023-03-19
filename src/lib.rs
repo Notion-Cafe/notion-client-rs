@@ -18,35 +18,35 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
-    HttpError(reqwest::Error),
-    DeserializationError(serde_json::Error, Option<Value>),
-    HeaderError(reqwest::header::InvalidHeaderValue),
-    ChronoParseError(chrono::ParseError),
+    Http(reqwest::Error),
+    Deserialization(serde_json::Error, Option<Value>),
+    Header(reqwest::header::InvalidHeaderValue),
+    ChronoParse(chrono::ParseError),
     NoSuchProperty(String),
     Unknown
 }
 
 impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
-        Error::HttpError(error)
+        Error::Http(error)
     }
 }
 
 impl From<reqwest::header::InvalidHeaderValue> for Error {
     fn from(error: reqwest::header::InvalidHeaderValue) -> Self {
-        Error::HeaderError(error)
+        Error::Header(error)
     }
 }
 
 impl From<serde_json::Error> for Error {
     fn from(error: serde_json::Error) -> Self {
-        Error::DeserializationError(error, None)
+        Error::Deserialization(error, None)
     }
 }
 
 impl From<chrono::ParseError> for Error {
     fn from(error: chrono::ParseError) -> Self {
-        Error::ChronoParseError(error)
+        Error::ChronoParse(error)
     }
 }
 
@@ -62,17 +62,16 @@ fn parse<T: for<'de> Deserialize<'de>>(key: &str, data: &Value) -> Result<T> {
 
 const NOTION_VERSION: &str = "2022-06-28";
 
-fn get_http_client(notion_api_key: &str) -> Result<reqwest::Client> {
+fn get_http_client(notion_api_key: &str) -> reqwest::Client {
     let mut headers = HeaderMap::new();
-    headers.insert("Authorization", HeaderValue::from_str(&format!("Bearer {notion_api_key}"))?);
-    headers.insert("Notion-Version", HeaderValue::from_str(NOTION_VERSION)?);
+    headers.insert("Authorization", HeaderValue::from_str(&format!("Bearer {notion_api_key}")).expect("bearer token to be parsed into a header"));
+    headers.insert("Notion-Version", HeaderValue::from_str(NOTION_VERSION).expect("notion version to be parsed into a header"));
     headers.insert("Content-Type", HeaderValue::from_static("application/json"));
 
-    Ok(
-        reqwest::ClientBuilder::new()
-            .default_headers(headers)
-            .build()?
-    )
+    reqwest::ClientBuilder::new()
+        .default_headers(headers)
+        .build()
+        .expect("to build a valid client out of notion_api_key")
 }
 
 #[allow(unused)]
@@ -85,21 +84,18 @@ pub struct Client {
 use std::rc::Rc;
 
 impl<'a> Client {
-    pub fn new(notion_api_key: &'a str) -> Result<Self> {
-        let http_client = Rc::from(get_http_client(notion_api_key)?);
-
+    pub fn new(notion_api_key: &'a str) -> Self {
+        let http_client = Rc::from(get_http_client(notion_api_key));
         
-        Ok(
-            Client {
-                http_client: http_client.clone(),
-                pages: Pages {
-                    http_client: http_client.clone()
-                },
-                blocks: Blocks {
-                    http_client: http_client.clone()
-                }
+        Client {
+            http_client: http_client.clone(),
+            pages: Pages {
+                http_client: http_client.clone()
+            },
+            blocks: Blocks {
+                http_client: http_client.clone()
             }
-        )
+        }
     }
 }
 
@@ -125,7 +121,7 @@ impl Pages {
             Err(error) => {
                 println!("Error: {error:#?}");
                 println!("Body: {:#?}", request.json::<Value>().await?);
-                Err(Error::HttpError(error))
+                Err(Error::Http(error))
             }
         }
     }
@@ -167,7 +163,7 @@ impl BlockChildren {
             Err(error) => {
                 println!("Error: {error:#?}");
                 println!("Body: {:#?}", request.json::<Value>().await?);
-                Err(Error::HttpError(error))
+                Err(Error::Http(error))
             }
         }
     }
@@ -192,7 +188,7 @@ impl Databases {
             Err(error) => {
                 println!("Error: {error:#?}");
                 println!("Body: {:#?}", request.json::<Value>().await?);
-                Err(Error::HttpError(error))
+                Err(Error::Http(error))
             }
         }
     }
