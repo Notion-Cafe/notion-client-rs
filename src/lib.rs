@@ -87,10 +87,15 @@ pub struct Client {
 #[allow(unused)]
 #[derive(Serialize)]
 pub struct SearchOptions<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sort: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub start_cursor: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub page_size: Option<u32>
 }
 
