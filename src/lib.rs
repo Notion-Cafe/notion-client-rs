@@ -23,8 +23,7 @@ pub enum Error {
     Deserialization(serde_json::Error, Option<Value>),
     Header(reqwest::header::InvalidHeaderValue),
     ChronoParse(chrono::ParseError),
-    NoSuchProperty(String),
-    Unknown
+    NoSuchProperty(String)
 }
 
 impl From<reqwest::Error> for Error {
