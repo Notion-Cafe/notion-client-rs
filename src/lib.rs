@@ -77,17 +77,17 @@ fn get_http_client(notion_api_key: &str) -> reqwest::Client {
 
 #[allow(unused)]
 pub struct Client {
-    http_client: Rc<reqwest::Client>,
+    http_client: Arc<reqwest::Client>,
     pub pages: Pages,
     pub blocks: Blocks,
     pub databases: Databases
 }
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 impl<'a> Client {
     pub fn new(notion_api_key: &'a str) -> Self {
-        let http_client = Rc::from(get_http_client(notion_api_key));
+        let http_client = Arc::from(get_http_client(notion_api_key));
         
         Client {
             http_client: http_client.clone(),
@@ -103,7 +103,7 @@ pub struct PageOptions<'a> {
 }
 
 pub struct Pages {
-    http_client: Rc<reqwest::Client>
+    http_client: Arc<reqwest::Client>
 }
 
 impl Pages {
@@ -127,7 +127,7 @@ impl Pages {
 }
 
 pub struct Blocks {
-    http_client: Rc<reqwest::Client>,
+    http_client: Arc<reqwest::Client>,
 }
 
 impl Blocks {
@@ -139,7 +139,7 @@ impl Blocks {
 }
 
 pub struct BlockChildren {
-    http_client: Rc<reqwest::Client>,
+    http_client: Arc<reqwest::Client>,
 }
 
 pub struct BlockChildrenListOptions<'a> {
@@ -169,11 +169,11 @@ impl BlockChildren {
 }
 
 pub struct Databases {
-    http_client: Rc<reqwest::Client>,
+    http_client: Arc<reqwest::Client>,
 }
 
 impl Databases {
-    pub async fn query<'a>(self, options: DatabaseQueryOptions<'a>) -> Result<QueryResponse<Page>> {
+    pub async fn query<'a>(&self, options: DatabaseQueryOptions<'a>) -> Result<QueryResponse<Page>> {
         let url = format!("https://api.notion.com/v1/databases/{database_id}/query", database_id = options.database_id);
 
         let mut request = self.http_client
