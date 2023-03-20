@@ -1,8 +1,7 @@
+use std::sync::Arc;
 use std::collections::HashMap;
+
 use serde_json::json;
-
-// TODO: Add the ability to hack into the code or add queuing
-
 use regex::Regex;
 use serde_json::Value;
 use chrono::{DateTime, Utc};
@@ -14,6 +13,8 @@ lazy_static! {
     static ref ISO_8601_DATE : Regex = Regex::new(r"^\d{4}-\d{2}-\d{2}$")
         .expect("ISO 8601 date regex to be parseable");
 }
+
+// TODO: Add the ability to hack into the code or add queuing
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -82,7 +83,16 @@ pub struct Client {
     pub databases: Databases
 }
 
-use std::sync::Arc;
+
+#[allow(unused)]
+#[derive(Serialize)]
+pub struct SearchOptions<'a> {
+    pub query: Option<&'a str>,
+    pub filter: Option<Value>,
+    pub sort: Option<Value>,
+    pub start_cursor: Option<&'a str>,
+    pub page_size: Option<u32>
+}
 
 impl<'a> Client {
     pub fn new(notion_api_key: &'a str) -> Self {
@@ -95,7 +105,27 @@ impl<'a> Client {
             databases: Databases { http_client: http_client.clone() }
         }
     }
+
+    pub async fn search<'b>(self, options: SearchOptions<'b>) -> Result<QueryResponse<Page>> {
+        let url = "https://api.notion.com/v1/search";
+
+        let request = self.http_client
+            .post(url)
+            .json(&options)
+            .send()
+            .await?;
+
+        match request.error_for_status_ref() {
+            Ok(_) => Ok(request.json().await?),
+            Err(error) => {
+                println!("Error: {error:#?}");
+                println!("Body: {:#?}", request.json::<Value>().await?);
+                Err(Error::Http(error))
+            }
+        }
+    }
 }
+
 
 pub struct PageOptions<'a> {
     pub page_id: &'a str 
