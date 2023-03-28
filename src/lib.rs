@@ -111,20 +111,18 @@ impl<'a> Client {
         }
     }
 
-    pub async fn search<'b>(self, options: SearchOptions<'b>) -> Result<QueryResponse<Page>> {
-        let url = "https://api.notion.com/v1/search";
-
-        let request = self.http_client
-            .post(url)
+    pub async fn search<'b, T: std::fmt::Debug + for<'de> serde::Deserialize<'de>>(self, options: SearchOptions<'b>) -> Result<QueryResponse<T>> {
+        let response = self.http_client
+            .post("https://api.notion.com/v1/search")
             .json(&options)
             .send()
             .await?;
 
-        match request.error_for_status_ref() {
-            Ok(_) => Ok(request.json().await?),
+        match response.error_for_status_ref() {
+            Ok(_) => Ok(response.json().await?),
             Err(error) => {
                 println!("Error: {error:#?}");
-                println!("Body: {:#?}", request.json::<Value>().await?);
+                println!("Body: {:#?}", response.json::<Value>().await?);
                 Err(Error::Http(error))
             }
         }
@@ -144,16 +142,16 @@ impl Pages {
     pub async fn retrieve<'a>(self, options: PageOptions<'a>) -> Result<Page> {
         let url = format!("https://api.notion.com/v1/pages/{page_id}", page_id = options.page_id);
 
-        let request = self.http_client
+        let response = self.http_client
             .get(url)
             .send()
             .await?;
 
-        match request.error_for_status_ref() {
-            Ok(_) => Ok(request.json().await?),
+        match response.error_for_status_ref() {
+            Ok(_) => Ok(response.json().await?),
             Err(error) => {
                 println!("Error: {error:#?}");
-                println!("Body: {:#?}", request.json::<Value>().await?);
+                println!("Body: {:#?}", response.json::<Value>().await?);
                 Err(Error::Http(error))
             }
         }
@@ -284,7 +282,7 @@ impl TryFrom<Value> for Block {
                     "column_list" => BlockType::ColumnList(parse("column_list", &data)?),
                     "column" => BlockType::Column(parse("column", &data)?),
 
-                    string => BlockType::Unsupported(string.to_string())
+                    string => BlockType::Unsupported(string.to_string(), data)
                 }
             }
         )
@@ -313,7 +311,7 @@ pub enum BlockType {
     PDF(PDF),
     ColumnList(ColumnList),
     Column(Column),
-    Unsupported(String),
+    Unsupported(String, Value),
 
     // TODO: Implement
     Toggle,
@@ -545,7 +543,7 @@ pub struct Database {
     pub id: String,
     pub title: Vec<RichText>,
     pub description: Vec<RichText>,
-    pub properties: Properties,
+    pub properties: DatabaseProperties,
     pub url: String,
 
     pub parent: Parent,
@@ -627,15 +625,44 @@ impl TryFrom<Value> for Properties {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum PropertyResponse {
-    List(Vec<Property>),
-    PropertyItem(Box<Property>)
+#[serde(try_from = "Value")]
+pub struct DatabaseProperties {
+    pub map: HashMap<String, DatabaseProperty>
+}
+
+impl DatabaseProperties {
+    pub fn get(&self, key: &str) -> Option<DatabaseProperty> {
+        match self.map.get(key) {
+            Some(property) => Some(property.to_owned()),
+            None => None
+        }
+    }
+
+    pub fn keys(&self) -> Vec<String> {
+        self.map.keys()
+            .map(|key| key.to_string())
+            .collect()
+    }
+}
+
+impl TryFrom<Value> for DatabaseProperties {
+    type Error = Error;
+
+    fn try_from(data: Value) -> Result<DatabaseProperties> {
+        let mut map = HashMap::new();
+        
+        for key in data.as_object().unwrap().keys() {
+            map.insert(key.to_owned(), parse(key, &data)?);
+        }
+
+        Ok(DatabaseProperties { map })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[allow(unused)]
 pub struct PartialProperty {
-    pub id: String,
+    pub id: String
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -660,7 +687,39 @@ pub enum PropertyType {
     CreatedBy,
     LastEditedTime,
     LastEditedBy,
-    Unknown
+    Empty,
+    Unsupported(String, Value)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[allow(unused)]
+pub enum DatabasePropertyType {
+    RichText,
+    Number,
+    Select(Vec<SelectOption>),
+    MultiSelect(Vec<SelectOption>),
+    Date,
+    Formula(DatabaseFormula),
+    Relation,
+    Rollup,
+    Title,
+    People,
+    Files,
+    Checkbox,
+    Url,
+    Email,
+    PhoneNumber,
+    CreatedTime,
+    CreatedBy,
+    LastEditedTime,
+    LastEditedBy,
+    Empty,
+    Unsupported(String, Value)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DatabaseFormula {
+    pub expression: String
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -670,7 +729,7 @@ pub enum Formula {
     Number(Option<i32>),
     Boolean(Option<bool>),
     Date(Option<Date>),
-    Unknown
+    Unsupported(String, Value)
 }
 
 impl TryFrom<Value> for Formula {
@@ -683,7 +742,7 @@ impl TryFrom<Value> for Formula {
                 "number" => Formula::Number(parse("number", &data)?),
                 "boolean" => Formula::Boolean(parse("boolean", &data)?),
                 "date" => Formula::Date(parse("date", &data)?),
-                _ => Formula::Unknown
+                key => Formula::Unsupported(key.to_string(), data)
             }
         )
     }
@@ -738,7 +797,7 @@ pub enum RichText {
     Text(Text, String),
     Mention(Mention, String),
     Equation(Equation, String),
-    Unknown
+    Unsupported(String, Value)
 }
 
 impl TryFrom<Value> for RichText {
@@ -755,7 +814,7 @@ impl TryFrom<Value> for RichText {
                 "text" => RichText::Text(serde_json::from_value(data)?, plain_text),
                 "mention" => RichText::Mention(serde_json::from_value(data)?, plain_text),
                 "equation" => RichText::Equation(serde_json::from_value(data)?, plain_text),
-                _ => RichText::Unknown
+                key => RichText::Unsupported(key.to_string(), data)
             }
         )
     }
@@ -808,7 +867,7 @@ pub enum Mention {
     Database(PartialDatabase),
     Date(Date),
     LinkPreview(LinkPreview),
-    Unknown
+    Unsupported(String, Value)
 }
 
 impl TryFrom<Value> for Mention {
@@ -822,10 +881,10 @@ impl TryFrom<Value> for Mention {
             match parse::<String>("type", mention)?.as_str() {
                 "user" => Mention::User(parse("user", mention)?),
                 "page" => Mention::Page(parse("page", mention)?),
-                "date" => Mention::Date(parse("date", mention)?),
+                "date" => Mention::Date(parse("date", &mention)?),
                 "database" => Mention::Database(parse("database", mention)?),
                 "link_preview" => Mention::LinkPreview(parse("link_preview", mention)?),
-                _ => Mention::Unknown
+                key => Mention::Unsupported(key.to_string(), data)
             }
         )
     }
@@ -838,12 +897,12 @@ pub struct LinkPreview {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PartialPage {
-    pub id: String,
+    pub id: String
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PartialDatabase {
-    pub id: String,
+    pub id: String
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -854,9 +913,9 @@ pub struct PartialBlock {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Date {
     pub start: DateValue,
-    pub end: Option<DateValue>
+    pub end: Option<DateValue>,
     // TODO: Implement for setting
-    // pub time_zone: Option<String>
+    pub time_zone: Option<String>
 }
 
 impl std::fmt::Display for Date {
@@ -982,6 +1041,10 @@ impl TryFrom<Value> for Property {
         Ok(
             Property {
                 id: data.get("id").ok_or_else(|| Error::NoSuchProperty("id".to_string()))?.to_string(),
+                next_url: match data.get("next_url") {
+                    Some(value) => Some(value.as_str().ok_or_else(|| Error::NoSuchProperty("next_url".to_string()))?.to_string()),
+                    None => None
+                },
                 value: match parse::<String>("type", &data)?.as_str() {
                     "title" => PropertyType::Title(parse("title", &data)?),
                     "rich_text" => PropertyType::RichText(parse("rich_text", &data)?),
@@ -990,16 +1053,58 @@ impl TryFrom<Value> for Property {
                     "select" => PropertyType::Select(parse("select", &data)?),
                     "formula" => PropertyType::Formula(parse("formula", &data)?),
                     "checkbox" => PropertyType::Checkbox(parse("checkbox", &data)?),
-                    _ => PropertyType::Unknown
-                },
-                next_url: match data.get("next_url") {
-                    Some(value) => Some(value.as_str().ok_or_else(|| Error::NoSuchProperty("next_url".to_string()))?.to_string()),
-                    None => None
+                    key => PropertyType::Unsupported(key.to_string(), data)
                 }
             }
         )
     }
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[allow(unused)]
+#[serde(try_from = "Value")]
+// FIXME: Convert to enum / PropertyType
+pub struct DatabaseProperty {
+    pub id: String,
+    pub next_url: Option<String>,
+    #[serde(rename(serialize = "type"))]
+    pub kind: DatabasePropertyType
+}
+
+impl TryFrom<Value> for DatabaseProperty {
+    type Error = Error;
+
+    fn try_from(data: Value) -> Result<DatabaseProperty> {
+        Ok(
+            DatabaseProperty {
+                id: data.get("id").ok_or_else(|| Error::NoSuchProperty("id".to_string()))?.to_string(),
+                next_url: match data.get("next_url") {
+                    Some(value) => Some(value.as_str().ok_or_else(|| Error::NoSuchProperty("next_url".to_string()))?.to_string()),
+                    None => None
+                },
+                kind: match parse::<String>("type", &data)?.as_str() {
+                    "title" => DatabasePropertyType::Title,
+                    "rich_text" => DatabasePropertyType::RichText,
+                    "date" => DatabasePropertyType::Date,
+                    "multi_select" => {
+                        // FIXME: Remove unwrap
+                        let options = parse::<Vec<SelectOption>>("options", &data.get("multi_select").unwrap())?;
+                        DatabasePropertyType::MultiSelect(options)
+                    },
+                    "select" => {
+                        // FIXME: Remove unwrap
+                        let options = parse::<Vec<SelectOption>>("options", &data.get("select").unwrap())?;
+                        DatabasePropertyType::Select(options)
+                    },
+                    "formula" => DatabasePropertyType::Formula(parse("formula", &data)?),
+                    "checkbox" => DatabasePropertyType::Checkbox,
+                    key => DatabasePropertyType::Unsupported(key.to_string(), data)
+                }
+            }
+        )
+    }
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(try_from = "Value")]
@@ -1008,7 +1113,7 @@ pub enum Parent {
     Database(PartialDatabase),
     Block(PartialBlock),
     Workspace(bool),
-    Unknown
+    Unsupported(String, Value)
 }
 
 impl TryFrom<Value> for Parent {
@@ -1021,7 +1126,7 @@ impl TryFrom<Value> for Parent {
                 "database_id" => Parent::Database(PartialDatabase { id: parse(parse::<String>("type", &data)?.as_str(), &data)? }),
                 "block_id" => Parent::Block(PartialBlock { id: parse(parse::<String>("type", &data)?.as_str(), &data)? }),
                 "workspace" => Parent::Workspace(parse("workspace", &data)?),
-                _ => Parent::Unknown
+                key => Parent::Unsupported(key.to_string(), data)
             }
         )
     }
@@ -1033,7 +1138,7 @@ impl TryFrom<Value> for Parent {
 pub enum File {
     Notion(String, DateValue),
     External(String),
-    Unknown
+    Unsupported(String, Value)
 }
 
 impl TryFrom<Value> for File {
@@ -1053,7 +1158,7 @@ impl TryFrom<Value> for File {
                     let external = data.get("external").ok_or_else(|| Error::NoSuchProperty("file".to_string()))?;
                     File::External(parse::<String>("url", external)?)
                 },
-                _ => File::Unknown
+                key => File::Unsupported(key.to_string(), data)
             }
         )
     }
@@ -1064,7 +1169,7 @@ impl TryFrom<Value> for File {
 pub enum Icon {
     File(File),
     Emoji(String),
-    Unknown
+    Unsupported(String, Value)
 }
 
 impl TryFrom<Value> for Icon {
@@ -1075,7 +1180,7 @@ impl TryFrom<Value> for Icon {
             match parse::<String>("type", &data)?.as_str() {
                 "file" => Icon::File(serde_json::from_value::<File>(data)?),
                 "emoji" => Icon::Emoji(parse::<String>("emoji", &data)?),
-                _ => Icon::Unknown
+                key => Icon::Unsupported(key.to_string(), data)
             }
         )
     }
@@ -1086,5 +1191,3 @@ impl std::fmt::Display for Error {
         Ok(write!(formatter, "NotionError::{:?}", self)?)
     }
 }
-
-
