@@ -9,27 +9,36 @@ use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use reqwest::header::{HeaderMap, HeaderValue};
 
+use futures_core::future::BoxFuture;
+
 lazy_static! {
-    static ref ISO_8601_DATE : Regex = Regex::new(r"^\d{4}-\d{2}-\d{2}$")
+    static ref ISO_8601_DATE: Regex = Regex::new(r"^\d{4}-\d{2}-\d{2}$")
         .expect("ISO 8601 date regex to be parseable");
 }
 
 // TODO: Add the ability to hack into the code or add queuing
 
 pub type Result<T> = std::result::Result<T, Error>;
+pub type Callback = dyn Fn(&mut reqwest::RequestBuilder) -> BoxFuture<'_, std::result::Result<reqwest::Response, reqwest::Error>> + 'static + Send + Sync;
 
 #[derive(Debug)]
 pub enum Error {
-    Http(reqwest::Error),
+    Http(reqwest::Error, Option<Value>),
     Deserialization(serde_json::Error, Option<Value>),
     Header(reqwest::header::InvalidHeaderValue),
     ChronoParse(chrono::ParseError),
     NoSuchProperty(String)
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        Ok(write!(formatter, "NotionError::{:?}", self)?)
+    }
+}
+
 impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
-        Error::Http(error)
+        Error::Http(error, None)
     }
 }
 
@@ -57,8 +66,31 @@ fn parse<T: for<'de> Deserialize<'de>>(key: &str, data: &Value) -> Result<T> {
     Ok(
         serde_json::from_value::<T>(
             data.get(key).ok_or_else(|| Error::NoSuchProperty(key.to_string()))?.clone()
-        )?
+        )
+        .map_err(|error| Error::Deserialization(error, Some(data.clone())))?
     )
+}
+
+async fn try_to_parse_response<T: std::fmt::Debug + for<'de> serde::Deserialize<'de>>(response: reqwest::Response) -> Result<T> {
+    let text = response.text().await?;
+
+    match serde_json::from_str::<T>(&text) {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            match serde_json::from_str::<Value>(&text) {
+                Ok(body) => {
+                    println!("Error: {error:#?}\n\nBody: {body:#?}");
+
+                    Err(Error::Deserialization(error, Some(body)))
+                },
+                _ => {
+                    println!("Error: {error:#?}\n\nBody: {text}");
+
+                    Err(Error::Deserialization(error, None))
+                }
+            }
+        }
+    }
 }
 
 const NOTION_VERSION: &str = "2022-06-28";
@@ -75,13 +107,7 @@ fn get_http_client(notion_api_key: &str) -> reqwest::Client {
         .expect("to build a valid client out of notion_api_key")
 }
 
-#[allow(unused)]
-pub struct Client {
-    http_client: Arc<reqwest::Client>,
-    pub pages: Pages,
-    pub blocks: Blocks,
-    pub databases: Databases
-}
+
 
 
 #[allow(unused)]
@@ -99,31 +125,96 @@ pub struct SearchOptions<'a> {
     pub page_size: Option<u32>
 }
 
-impl<'a> Client {
-    pub fn new(notion_api_key: &'a str) -> Self {
-        let http_client = Arc::from(get_http_client(notion_api_key));
+#[derive(Default)]
+pub struct ClientBuilder {
+    api_key: Option<String>,
+    custom_request: Option<Arc<Callback>>
+}
+
+impl ClientBuilder {
+    pub fn api_key(mut self, api_key: &str) -> Self {
+        self.api_key = Some(api_key.to_owned());
+
+        self
+    }
+
+    pub fn custom_request<F>(mut self, callback: F) -> Self 
+    where
+        for<'c> F: Fn(&'c mut reqwest::RequestBuilder) -> BoxFuture<'c, std::result::Result<reqwest::Response, reqwest::Error>>
+            + 'static
+            + Send
+            + Sync {
+        self.custom_request = Some(Arc::new(callback));
+
+        self
+    }
+    
+    pub fn build(self) -> Client {
+        let notion_api_key = self.api_key
+            .expect("api_key to be set");
+
+        let request_handler = self.custom_request
+            .unwrap_or(
+                Arc::new(
+                    |request_builder: &mut reqwest::RequestBuilder| Box::pin(async move {
+                        let request = request_builder.try_clone()
+                            .expect("non-stream body request clone to succeed");
+
+                        request.send().await
+                    })
+                )
+            );
+
+        let http_client = Arc::from(get_http_client(&notion_api_key));
         
         Client {
             http_client: http_client.clone(),
-            pages: Pages { http_client: http_client.clone() },
-            blocks: Blocks { http_client: http_client.clone() },
-            databases: Databases { http_client: http_client.clone() }
+            request_handler: request_handler.clone(),
+
+            pages: Pages { 
+                http_client: http_client.clone(), 
+                request_handler: request_handler.clone() 
+            },
+            blocks: Blocks { 
+                http_client: http_client.clone(),
+                request_handler: request_handler.clone() 
+            },
+            databases: Databases { 
+                http_client: http_client.clone(),
+                request_handler: request_handler.clone() 
+            }
         }
     }
 
+}
+
+#[allow(unused)]
+pub struct Client {
+    http_client: Arc<reqwest::Client>,
+    request_handler: Arc<Callback>,
+
+    pub pages: Pages,
+    pub blocks: Blocks,
+    pub databases: Databases
+}
+
+impl<'a> Client {
+    pub fn new() -> ClientBuilder {
+        ClientBuilder::default()
+    }
+
     pub async fn search<'b, T: std::fmt::Debug + for<'de> serde::Deserialize<'de>>(self, options: SearchOptions<'b>) -> Result<QueryResponse<T>> {
-        let response = self.http_client
+        let mut request = self.http_client
             .post("https://api.notion.com/v1/search")
-            .json(&options)
-            .send()
-            .await?;
+            .json(&options);
+
+        let response = (self.request_handler)(&mut request).await?;
 
         match response.error_for_status_ref() {
             Ok(_) => Ok(response.json().await?),
             Err(error) => {
-                println!("Error: {error:#?}");
-                println!("Body: {:#?}", response.json::<Value>().await?);
-                Err(Error::Http(error))
+                let body = response.json::<Value>().await?;
+                Err(Error::Http(error, Some(body)))
             }
         }
     }
@@ -135,24 +226,24 @@ pub struct PageOptions<'a> {
 }
 
 pub struct Pages {
-    http_client: Arc<reqwest::Client>
+    http_client: Arc<reqwest::Client>,
+    request_handler: Arc<Callback>
 }
 
 impl Pages {
     pub async fn retrieve<'a>(self, options: PageOptions<'a>) -> Result<Page> {
         let url = format!("https://api.notion.com/v1/pages/{page_id}", page_id = options.page_id);
 
-        let response = self.http_client
-            .get(url)
-            .send()
-            .await?;
+        let mut request = self.http_client
+            .get(url);
+
+        let response = (self.request_handler)(&mut request).await?;
 
         match response.error_for_status_ref() {
             Ok(_) => Ok(response.json().await?),
             Err(error) => {
-                println!("Error: {error:#?}");
-                println!("Body: {:#?}", response.json::<Value>().await?);
-                Err(Error::Http(error))
+                let body = response.json::<Value>().await?;
+                Err(Error::Http(error, Some(body)))
             }
         }
     }
@@ -160,18 +251,21 @@ impl Pages {
 
 pub struct Blocks {
     http_client: Arc<reqwest::Client>,
+    request_handler: Arc<Callback>
 }
 
 impl Blocks {
     pub fn children(&self) -> BlockChildren {
         BlockChildren {
-            http_client: self.http_client.clone()
+            http_client: self.http_client.clone(),
+            request_handler: self.request_handler.clone() 
         }
     }
 }
 
 pub struct BlockChildren {
     http_client: Arc<reqwest::Client>,
+    request_handler: Arc<Callback>
 }
 
 pub struct BlockChildrenListOptions<'a> {
@@ -182,19 +276,18 @@ impl BlockChildren {
     pub async fn list<'a>(self, options: BlockChildrenListOptions<'a>) -> Result<QueryResponse<Block>> {
         let url = format!("https://api.notion.com/v1/blocks/{block_id}/children", block_id = options.block_id);
 
-        let request = self.http_client
-            .get(&url)
-            .send()
-            .await?;
+        let mut request = self.http_client
+            .get(&url);
 
-        match request.error_for_status_ref() {
+        let response = (self.request_handler)(&mut request).await?;
+
+        match response.error_for_status_ref() {
             Ok(_) => {
-                Ok(request.json().await?)
+                Ok(response.json().await?)
             },
             Err(error) => {
-                println!("Error: {error:#?}");
-                println!("Body: {:#?}", request.json::<Value>().await?);
-                Err(Error::Http(error))
+                let body = response.json::<Value>().await?;
+                Err(Error::Http(error, Some(body)))
             }
         }
     }
@@ -202,6 +295,7 @@ impl BlockChildren {
 
 pub struct Databases {
     http_client: Arc<reqwest::Client>,
+    request_handler: Arc<Callback>
 }
 
 impl Databases {
@@ -215,16 +309,13 @@ impl Databases {
             request = request.json(&json!({ "filter": filter }));
         }
 
-        let request = request
-            .send()
-            .await?;
+        let response = (self.request_handler)(&mut request).await?;
 
-        match request.error_for_status_ref() {
-            Ok(_) => Ok(request.json().await?),
+        match response.error_for_status_ref() {
+            Ok(_) => try_to_parse_response(response).await,
             Err(error) => {
-                println!("Error: {error:#?}");
-                println!("Body: {:#?}", request.json::<Value>().await?);
-                Err(Error::Http(error))
+                let body = try_to_parse_response::<Value>(response).await?;
+                Err(Error::Http(error, Some(body)))
             }
         }
     }
@@ -523,7 +614,7 @@ pub struct ChildDatabase {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct User {
     pub id: String,
-    pub name: String,
+    pub name: Option<String>,
     pub person: Option<Person>,
     pub avatar_url: Option<String>
 }
@@ -592,15 +683,14 @@ pub struct PartialUser {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(try_from = "Value")]
 pub struct Properties {
-    pub map: HashMap<String, Property>
+    pub map: HashMap<String, Property>,
+    pub id_map: HashMap<String, Property>
 }
 
 impl Properties {
-    pub fn get(&self, key: &str) -> Option<Property> {
-        match self.map.get(key) {
-            Some(property) => Some(property.to_owned()),
-            None => None
-        }
+    pub fn get(&self, key: &str) -> Option<&Property> {
+        self.map.get(key)
+            .or(self.id_map.get(key))
     }
 
     pub fn keys(&self) -> Vec<String> {
@@ -615,27 +705,30 @@ impl TryFrom<Value> for Properties {
 
     fn try_from(data: Value) -> Result<Properties> {
         let mut map = HashMap::new();
+        let mut id_map = HashMap::new();
         
         for key in data.as_object().unwrap().keys() {
-            map.insert(key.to_owned(), parse(key, &data)?);
+            let property: Property = parse(key, &data)?;
+
+            map.insert(key.to_owned(), property.clone());
+            id_map.insert(property.id.clone(), property);
         }
 
-        Ok(Properties { map })
+        Ok(Properties { map, id_map })
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(try_from = "Value")]
 pub struct DatabaseProperties {
-    pub map: HashMap<String, DatabaseProperty>
+    pub map: HashMap<String, DatabaseProperty>,
+    pub id_map: HashMap<String, DatabaseProperty>
 }
 
 impl DatabaseProperties {
-    pub fn get(&self, key: &str) -> Option<DatabaseProperty> {
-        match self.map.get(key) {
-            Some(property) => Some(property.to_owned()),
-            None => None
-        }
+    pub fn get(&self, key: &str) -> Option<&DatabaseProperty> {
+        self.map.get(key)
+            .or(self.id_map.get(key))
     }
 
     pub fn keys(&self) -> Vec<String> {
@@ -650,12 +743,16 @@ impl TryFrom<Value> for DatabaseProperties {
 
     fn try_from(data: Value) -> Result<DatabaseProperties> {
         let mut map = HashMap::new();
+        let mut id_map = HashMap::new();
         
         for key in data.as_object().unwrap().keys() {
-            map.insert(key.to_owned(), parse(key, &data)?);
+            let property: DatabaseProperty = parse(key, &data)?;
+
+            map.insert(key.to_owned(), property.clone());
+            id_map.insert(property.id.clone(), property);
         }
 
-        Ok(DatabaseProperties { map })
+        Ok(DatabaseProperties { map, id_map })
     }
 }
 
@@ -672,7 +769,7 @@ pub enum PropertyType {
     Number,
     Select(Select),
     MultiSelect(MultiSelect),
-    Date(Date),
+    Date(Option<Date>),
     Formula(Formula),
     Relation,
     Rollup,
@@ -687,7 +784,6 @@ pub enum PropertyType {
     CreatedBy,
     LastEditedTime,
     LastEditedBy,
-    Empty,
     Unsupported(String, Value)
 }
 
@@ -713,7 +809,6 @@ pub enum DatabasePropertyType {
     CreatedBy,
     LastEditedTime,
     LastEditedBy,
-    Empty,
     Unsupported(String, Value)
 }
 
@@ -726,7 +821,7 @@ pub struct DatabaseFormula {
 #[serde(try_from = "Value")]
 pub enum Formula {
     String(Option<String>),
-    Number(Option<i32>),
+    Number(Option<f64>),
     Boolean(Option<bool>),
     Date(Option<Date>),
     Unsupported(String, Value)
@@ -750,7 +845,7 @@ impl TryFrom<Value> for Formula {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(try_from = "Value")]
-pub struct Select(pub SelectOption);
+pub struct Select(pub Option<SelectOption>);
 
 impl TryFrom<Value> for Select {
     type Error = Error;
@@ -1040,7 +1135,11 @@ impl TryFrom<Value> for Property {
     fn try_from(data: Value) -> Result<Property> {
         Ok(
             Property {
-                id: data.get("id").ok_or_else(|| Error::NoSuchProperty("id".to_string()))?.to_string(),
+                id: data.get("id")
+                    .ok_or_else(|| Error::NoSuchProperty("id".to_string()))?
+                    .as_str()
+                    .unwrap() // FIXME: Remove unwrap
+                    .to_string(),
                 next_url: match data.get("next_url") {
                     Some(value) => Some(value.as_str().ok_or_else(|| Error::NoSuchProperty("next_url".to_string()))?.to_string()),
                     None => None
@@ -1066,6 +1165,7 @@ impl TryFrom<Value> for Property {
 // FIXME: Convert to enum / PropertyType
 pub struct DatabaseProperty {
     pub id: String,
+    pub name: String,
     pub next_url: Option<String>,
     #[serde(rename(serialize = "type"))]
     pub kind: DatabasePropertyType
@@ -1075,17 +1175,24 @@ impl TryFrom<Value> for DatabaseProperty {
     type Error = Error;
 
     fn try_from(data: Value) -> Result<DatabaseProperty> {
+
         Ok(
             DatabaseProperty {
-                id: data.get("id").ok_or_else(|| Error::NoSuchProperty("id".to_string()))?.to_string(),
+                id: data.get("id")
+                    .ok_or_else(|| Error::NoSuchProperty("id".to_string()))?
+                    .as_str()
+                    .unwrap() // FIXME: Remove this unwrap
+                    .to_string(),
+
                 next_url: match data.get("next_url") {
                     Some(value) => Some(value.as_str().ok_or_else(|| Error::NoSuchProperty("next_url".to_string()))?.to_string()),
                     None => None
                 },
+                name: parse::<String>("name", &data)?,
                 kind: match parse::<String>("type", &data)?.as_str() {
                     "title" => DatabasePropertyType::Title,
                     "rich_text" => DatabasePropertyType::RichText,
-                    "date" => DatabasePropertyType::Date,
+                    "date" | "created_time" | "last_edited_time" => DatabasePropertyType::Date,
                     "multi_select" => {
                         // FIXME: Remove unwrap
                         let options = parse::<Vec<SelectOption>>("options", &data.get("multi_select").unwrap())?;
@@ -1098,6 +1205,16 @@ impl TryFrom<Value> for DatabaseProperty {
                     },
                     "formula" => DatabasePropertyType::Formula(parse("formula", &data)?),
                     "checkbox" => DatabasePropertyType::Checkbox,
+                    "number" => DatabasePropertyType::Number,
+                    // TODO: "relation"
+                    // TODO: "rollup"
+                    // TODO: "people"
+                    // TODO: "files"
+                    // TODO: "url"
+                    // TODO: "email"
+                    // TODO: "phone_number"
+                    // TODO: "created_by"
+                    // TODO: "last_edited_by"
                     key => DatabasePropertyType::Unsupported(key.to_string(), data)
                 }
             }
@@ -1186,8 +1303,4 @@ impl TryFrom<Value> for Icon {
     }
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        Ok(write!(formatter, "NotionError::{:?}", self)?)
-    }
-}
+
