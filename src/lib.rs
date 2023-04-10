@@ -16,8 +16,6 @@ lazy_static! {
         .expect("ISO 8601 date regex to be parseable");
 }
 
-// TODO: Add the ability to hack into the code or add queuing
-
 pub type Result<T> = std::result::Result<T, Error>;
 pub type Callback = dyn Fn(&mut reqwest::RequestBuilder) -> BoxFuture<'_, std::result::Result<reqwest::Response, reqwest::Error>> + 'static + Send + Sync;
 
@@ -182,6 +180,10 @@ impl ClientBuilder {
             databases: Databases { 
                 http_client: http_client.clone(),
                 request_handler: request_handler.clone() 
+            },
+            users: Users {
+                http_client: http_client.clone(),
+                request_handler: request_handler.clone() 
             }
         }
     }
@@ -195,7 +197,8 @@ pub struct Client {
 
     pub pages: Pages,
     pub blocks: Blocks,
-    pub databases: Databases
+    pub databases: Databases,
+    pub users: Users
 }
 
 impl<'a> Client {
@@ -327,6 +330,33 @@ pub struct DatabaseQueryOptions<'a> {
     pub filter: Option<Value> 
 }
 
+pub struct Users {
+    http_client: Arc<reqwest::Client>,
+    request_handler: Arc<Callback>
+}
+
+impl Users {
+    pub async fn get(&self) -> Result<QueryResponse<User>> {
+        let url = "https://api.notion.com/v1/users".to_owned();
+
+        let mut request = self.http_client
+            .get(&url);
+
+        let response = (self.request_handler)(&mut request).await?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                Ok(response.json().await?)
+            },
+            Err(error) => {
+                let body = response.json::<Value>().await?;
+                Err(Error::Http(error, Some(body)))
+            }
+        }
+    }
+}
+
+// Start of normal entities
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(try_from = "Value")]
