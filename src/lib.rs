@@ -228,6 +228,7 @@ pub struct PageOptions<'a> {
     pub page_id: &'a str 
 }
 
+#[derive(Clone)]
 pub struct Pages {
     http_client: Arc<reqwest::Client>,
     request_handler: Arc<Callback>
@@ -252,6 +253,7 @@ impl Pages {
     }
 }
 
+#[derive(Clone)]
 pub struct Blocks {
     http_client: Arc<reqwest::Client>,
     request_handler: Arc<Callback>
@@ -296,6 +298,7 @@ impl BlockChildren {
     }
 }
 
+#[derive(Clone)]
 pub struct Databases {
     http_client: Arc<reqwest::Client>,
     request_handler: Arc<Callback>
@@ -330,6 +333,7 @@ pub struct DatabaseQueryOptions<'a> {
     pub filter: Option<Value> 
 }
 
+#[derive(Clone)]
 pub struct Users {
     http_client: Arc<reqwest::Client>,
     request_handler: Arc<Callback>
@@ -922,7 +926,20 @@ pub enum RichText {
     Text(Text, String),
     Mention(Mention, String),
     Equation(Equation, String),
+
     Unsupported(String, Value)
+}
+
+#[allow(unused)]
+impl RichText {
+    pub fn plain_text(&self) -> String {
+        match self {
+            RichText::Text(_, text) |
+            RichText::Mention(_, text) |
+            RichText::Equation(_, text) |
+            RichText::Unsupported(text, _) => text.to_string()
+        }
+    }
 }
 
 impl TryFrom<Value> for RichText {
