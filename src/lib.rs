@@ -992,7 +992,7 @@ pub enum Property {
     },
     MultiSelect {
         id: String,
-        options: Option<Vec<SelectOption>>,
+        multi_select: Vec<SelectOption>,
     },
     Number {
         id: String,
