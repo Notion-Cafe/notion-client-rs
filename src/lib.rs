@@ -324,8 +324,28 @@ impl Databases {
 
         let mut request = self.http_client.post(url);
 
-        if let Some(filter) = options.filter {
-            request = request.json(&json!({ "filter": filter }));
+        let json = if let Some(filter) = options.filter {
+            Some(json!({ "filter": filter }))
+        } else {
+            None
+        };
+
+        let json = if let Some(sorts) = options.sorts {
+            if let Some(mut json) = json {
+                json.as_object_mut()
+                    .expect("Some object to be editable")
+                    .insert("sorts".to_string(), sorts);
+
+                Some(json)
+            } else {
+                Some(json!({ "sorts": sorts }))
+            }
+        } else {
+            json
+        };
+
+        if let Some(json) = json {
+            request = request.json(&json);
         }
 
         let response = (self.request_handler)(&mut request).await?;
@@ -387,6 +407,7 @@ pub struct DatabaseQueryOptions<'a> {
     pub database_id: &'a str,
     // TODO: Implement spec for filter?
     pub filter: Option<Value>,
+    pub sorts: Option<Value>,
 }
 
 #[derive(Clone)]
