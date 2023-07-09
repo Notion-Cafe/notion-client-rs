@@ -344,6 +344,20 @@ impl Databases {
             json
         };
 
+        let json = if let Some(cursor) = options.start_cursor {
+            if let Some(mut json) = json {
+                json.as_object_mut()
+                    .expect("Some object to be editable")
+                    .insert("start_cursor".to_string(), Value::String(cursor));
+
+                Some(json)
+            } else {
+                Some(json!({ "start_cursor": cursor }))
+            }
+        } else {
+            json
+        };
+
         if let Some(json) = json {
             request = request.json(&json);
         }
@@ -408,6 +422,7 @@ pub struct DatabaseQueryOptions<'a> {
     // TODO: Implement spec for filter?
     pub filter: Option<Value>,
     pub sorts: Option<Value>,
+    pub start_cursor: Option<String>,
 }
 
 #[derive(Clone)]
@@ -966,6 +981,18 @@ impl Page {
             property.id().is_some()
                 && property.id().expect("id that is_some() to be unwrappable") == id
         })
+    }
+
+    pub fn get_title(&self) -> &Vec<RichText> {
+        if let Property::Title { title, .. } = self
+            .get_property_by_id("title")
+            .expect("every page to have a title")
+            .1
+        {
+            title
+        } else {
+            unreachable!("Expected title to be of type title")
+        }
     }
 }
 
