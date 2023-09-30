@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveTime, Utc};
 use lazy_static::lazy_static;
 use regex::Regex;
 #[cfg(feature = "request")]
@@ -1263,12 +1263,7 @@ impl From<DateValue> for String {
 impl std::fmt::Display for DateValue {
     fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         let value = match self {
-            DateValue::Date(date) => DateTime::<Utc>::from_utc(
-                date.and_hms_opt(0, 0, 0)
-                    .expect("to parse NaiveDate into DateTime "),
-                Utc,
-            )
-            .to_rfc3339(),
+            DateValue::Date(date) => date.and_time(NaiveTime::MIN).and_utc().to_rfc3339(),
             DateValue::DateTime(date_time) => date_time.to_rfc3339(),
         };
         Ok(write!(formatter, "{}", value)?)
