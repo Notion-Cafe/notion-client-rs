@@ -14,6 +14,7 @@ base64 = "0.21.0"
 chrono = "0.4.23"
 futures-core = "0.3.28"
 lazy_static = "1.4.0"
+log = "0.4.20"
 regex = "1.7.1"
 reqwest = { version = "0.11.14", features = ["json"] }
 serde = { version = "1.0.152", features = ["derive"] }

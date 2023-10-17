@@ -6,7 +6,8 @@ use lazy_static::lazy_static;
 use regex::Regex;
 #[cfg(feature = "request")]
 use reqwest::header::{HeaderMap, HeaderValue};
-use serde::{Deserialize, Serialize};
+use serde::de::Error as SerdeError;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use serde_json::Value;
 
@@ -34,6 +35,7 @@ pub enum Error {
     Deserialization(serde_json::Error, Option<Value>),
     Header(reqwest::header::InvalidHeaderValue),
     ChronoParse(chrono::ParseError),
+    UnexpectedType,
 }
 
 impl std::fmt::Display for Error {
@@ -74,16 +76,8 @@ async fn try_to_parse_response<T: std::fmt::Debug + for<'de> serde::Deserialize<
     match serde_json::from_str::<T>(&text) {
         Ok(value) => Ok(value),
         Err(error) => match serde_json::from_str::<Value>(&text) {
-            Ok(body) => {
-                println!("Error: {error:#?}\n\nBody: {body:#?}");
-
-                Err(Error::Deserialization(error, None))
-            }
-            _ => {
-                println!("Error: {error:#?}\n\nBody: {text}");
-
-                Err(Error::Deserialization(error, None))
-            }
+            Ok(body) => Err(Error::Deserialization(error, Some(body))),
+            _ => Err(Error::Deserialization(error, Some(Value::String(text)))),
         },
     }
 }
@@ -764,6 +758,8 @@ pub struct Database {
     pub id: String,
     pub title: Vec<RichText>,
     pub description: Vec<RichText>,
+
+    #[serde(deserialize_with = "deserialize_database_properties")]
     pub properties: HashMap<String, DatabaseProperty>,
     pub url: String,
 
@@ -872,9 +868,7 @@ pub enum DatabaseProperty {
         name: String,
     },
 
-    // TODO: Implement Unsupported(Value)
-    #[serde(other)]
-    Unsupported,
+    Unsupported(Value),
 }
 
 impl DatabaseProperty {
@@ -902,7 +896,7 @@ impl DatabaseProperty {
             | Title { id, .. }
             | Url { id, .. } => Some(id.to_owned()),
 
-            Unsupported => None,
+            Unsupported(..) => None,
         }
     }
 
@@ -930,9 +924,34 @@ impl DatabaseProperty {
             | Title { name, .. }
             | Url { name, .. } => Some(name.to_owned()),
 
-            Unsupported => None,
+            Unsupported(..) => None,
         }
     }
+}
+
+fn deserialize_database_properties<'de, D>(
+    deserializer: D,
+) -> std::result::Result<HashMap<String, DatabaseProperty>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Value::deserialize(deserializer)?
+        .as_object_mut()
+        .ok_or(Error::UnexpectedType)
+        .map_err(D::Error::custom)?
+        .into_iter()
+        .map(|(key, value)| {
+            (
+                key.to_owned(),
+                serde_json::from_value::<DatabaseProperty>(value.to_owned()).unwrap_or_else(|error| {
+                    log::warn!(
+                        "Could not parse value because of error, defaulting to Unsupported:\n= ERROR:\n{error:#?}\n= VALUE:\n{value:#?}\n---"
+                    );
+                    DatabaseProperty::Unsupported(value.to_owned())
+                }),
+            )
+        })
+        .collect::<HashMap<String, DatabaseProperty>>())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -970,6 +989,7 @@ pub struct Page {
     pub cover: Option<File>,
     pub icon: Option<Icon>,
 
+    #[serde(deserialize_with = "deserialize_properties")]
     pub properties: HashMap<String, Property>,
 
     pub archived: bool,
@@ -1025,6 +1045,7 @@ pub enum Property {
     },
     Formula {
         id: String,
+        name: Option<String>,
         formula: Formula,
     },
     LastEditedBy {
@@ -1054,7 +1075,7 @@ pub enum Property {
     },
     Relation {
         id: String,
-        relation: Vec<Relation>,
+        // relation: Vec<Relation>,
     },
     Rollup {
         id: String,
@@ -1074,10 +1095,14 @@ pub enum Property {
         id: String,
         url: Option<String>,
     },
+    Verification {
+        id: String, // TODO: Implement
+    },
+    UniqueId {
+        id: String,
+    },
 
-    // TODO: Implement Unsupported(Value)
-    #[serde(other)]
-    Unsupported,
+    Unsupported(Value),
 }
 
 impl Property {
@@ -1104,11 +1129,90 @@ impl Property {
             | Select { id, .. }
             | Status { id, .. }
             | Url { id, .. }
-            | Formula { id, .. } => Some(id.to_owned()),
+            | Formula { id, .. }
+            | Verification { id, .. }
+            | UniqueId { id, .. } => Some(id.to_owned()),
 
-            Unsupported => None,
+            Unsupported(_) => None,
         }
     }
+}
+
+fn deserialize_properties<'de, D>(
+    deserializer: D,
+) -> std::result::Result<HashMap<String, Property>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Value::deserialize(deserializer)?
+        .as_object_mut()
+        .ok_or(Error::UnexpectedType)
+        .map_err(D::Error::custom)?
+        .into_iter()
+        .map(|(key, value)| {
+            if let Value::Object(ref mut object) = value {
+                // Notion sometimes sends an empty object when it means "null", so we gotta do it's homework
+                for value in object.values_mut() {
+                    if value == &mut json!({}) {
+                        *value = Value::Null
+                    }
+                }
+
+                // Correcting missing values
+                for (key, value) in object.iter_mut() {
+                    match key.as_ref() {
+                        // Notion forgets to set the formula type, so we're doing it's homework
+                        "formula" => {
+                            if let Value::Object(object) = value {
+                                if let None = object.get("type") {
+                                    object.insert("type".to_owned(), json!("string"));
+                                }
+                            }
+                        }
+                        // Notion sometimes just sets title to an empty object? Guess we have to set it to something?
+                        "title" => {
+                            if let Value::Null = value {
+                                *value = json!([{
+                                  "type": "text",
+                                  "text": {
+                                    "content": "Unknown title",
+                                    "link": null
+                                  },
+                                  "annotations": {
+                                    "bold": false,
+                                    "italic": false,
+                                    "strikethrough": false,
+                                    "underline": false,
+                                    "code": false,
+                                    "color": "default"
+                                  },
+                                  "plain_text": "Unknown title",
+                                  "href": null
+                                }])
+                            }
+                        }
+                        // Notion sometimes forget to set a value for a checkbox??
+                        "checkbox" => {
+                            if let Value::Null = value {
+                                *value = json!(false)
+                            }
+                        }
+                        _ => {}
+                    };
+                }
+            }
+
+            (
+                key.to_owned(),
+                serde_json::from_value::<Property>(value.to_owned()).unwrap_or_else(|error| {
+                    log::warn!(
+                        "Could not parse value because of error, defaulting to Unsupported:\n= ERROR:\n{error:#?}\n= VALUE:\n{value:#?}\n---"
+                    );
+                    Property::Unsupported(value.to_owned())
+                }),
+            )
+        })
+        .collect::<HashMap<String, Property>>())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
