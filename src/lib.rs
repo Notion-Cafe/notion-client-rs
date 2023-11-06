@@ -614,9 +614,9 @@ pub struct Paragraph {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct Code {
-    caption: Vec<RichText>,
-    rich_text: Vec<RichText>,
-    language: CodeLanguage,
+    pub caption: Vec<RichText>,
+    pub rich_text: Vec<RichText>,
+    pub language: CodeLanguage,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
