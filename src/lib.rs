@@ -476,7 +476,9 @@ pub enum BlockType {
     Callout {
         callout: Callout,
     },
-    ChildDatabase,
+    ChildDatabase {
+        child_database: ChildDatabase
+    },
     ChildPage,
     Code {
         code: Code,
@@ -538,13 +540,13 @@ pub enum BlockType {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Embed {
-    url: String,
+    pub url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Bookmark {
-    caption: Vec<RichText>,
-    url: String,
+    pub caption: Vec<RichText>,
+    pub url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
