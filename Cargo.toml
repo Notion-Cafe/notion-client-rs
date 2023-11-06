@@ -11,7 +11,7 @@ convert_from_notion = []
 [dependencies]
 async-trait = "0.1.68"
 base64 = "0.21.0"
-chrono = "0.4.23"
+chrono = "0.4.31"
 futures-core = "0.3.28"
 lazy_static = "1.4.0"
 log = "0.4.20"
