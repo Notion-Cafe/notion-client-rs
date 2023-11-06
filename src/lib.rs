@@ -1449,13 +1449,13 @@ pub enum Icon {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct NotionFile {
-    expiry_time: DateValue,
-    url: String,
+    pub expiry_time: DateValue,
+    pub url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct ExternalFile {
-    url: String,
+    pub url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
