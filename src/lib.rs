@@ -479,7 +479,9 @@ pub enum BlockType {
     ChildDatabase {
         child_database: ChildDatabase
     },
-    ChildPage,
+    ChildPage {
+        child_page: ChildPage
+    },
     Code {
         code: Code,
     },
