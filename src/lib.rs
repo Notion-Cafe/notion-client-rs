@@ -477,10 +477,10 @@ pub enum BlockType {
         callout: Callout,
     },
     ChildDatabase {
-        child_database: ChildDatabase
+        child_database: ChildDatabase,
     },
     ChildPage {
-        child_page: ChildPage
+        child_page: ChildPage,
     },
     Code {
         code: Code,
@@ -947,9 +947,11 @@ where
         .map(|(key, value)| {
             (
                 key.to_owned(),
+
                 serde_json::from_value::<DatabaseProperty>(value.to_owned()).unwrap_or_else(|error| {
                     log::warn!(
-                        "Could not parse value because of error, defaulting to Unsupported:\n= ERROR:\n{error:#?}\n= VALUE:\n{value:#?}\n---"
+                        "Could not parse value because of error, defaulting to DatabaseProperty::Unsupported:\n= ERROR:\n{error:#?}\n= JSON:\n{:#?}\n---",
+                        serde_json::to_string_pretty(&value).unwrap()
                     );
                     DatabaseProperty::Unsupported(value.to_owned())
                 }),
@@ -1210,7 +1212,8 @@ where
                 key.to_owned(),
                 serde_json::from_value::<Property>(value.to_owned()).unwrap_or_else(|error| {
                     log::warn!(
-                        "Could not parse value because of error, defaulting to Unsupported:\n= ERROR:\n{error:#?}\n= VALUE:\n{value:#?}\n---"
+                        "Could not parse value because of error, defaulting to Property::Unsupported:\n= ERROR:\n{error:#?}\n= JSON:\n{}\n---",
+                        serde_json::to_string_pretty(&value).unwrap()
                     );
                     Property::Unsupported(value.to_owned())
                 }),
